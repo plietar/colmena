@@ -10,7 +10,7 @@ use env_logger::fmt::WriteStyle;
 use crate::{
     command::{self, apply::DeployOpts},
     error::ColmenaResult,
-    nix::{hive::EvaluationMethod, Hive, HivePath},
+    nix::{Hive, HivePath},
 };
 
 /// Base URL of the manual, without the trailing slash.
@@ -267,7 +267,12 @@ async fn get_hive(opts: &Opts) -> ColmenaResult<Hive> {
         }
     }
 
-    let mut hive = Hive::new(path).await?;
+    let mut hive = if opts.experimental_flake_eval {
+        log::warn!("Using direct flake evaluation (experimental)");
+        Hive::with_flake_eval(path).await?
+    } else {
+        Hive::new(path).await?
+    };
 
     if opts.show_trace {
         hive.set_show_trace(true);
@@ -275,11 +280,6 @@ async fn get_hive(opts: &Opts) -> ColmenaResult<Hive> {
 
     if opts.impure {
         hive.set_impure(true);
-    }
-
-    if opts.experimental_flake_eval {
-        log::warn!("Using direct flake evaluation (experimental)");
-        hive.set_evaluation_method(EvaluationMethod::DirectFlakeEval);
     }
 
     for chunks in opts.nix_option.chunks_exact(2) {

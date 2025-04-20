@@ -79,15 +79,15 @@ impl FromStr for HivePath {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum EvaluationMethod {
+#[derive(Debug)]
+enum EvaluationMethod {
     /// Use nix-instantiate and specify the entire Nix expression.
     ///
     /// This is the default method.
     ///
     /// For flakes, we use `builtins.getFlakes`. Pure evaluation no longer works
     /// with this method in Nix 2.21+.
-    NixInstantiate,
+    NixInstantiate(Assets),
 
     /// Use `nix eval --apply` on top of a flake.
     ///
@@ -111,9 +111,6 @@ pub struct Hive {
     /// Normally this is directory containing the "hive.nix"
     /// or "flake.nix".
     context_dir: Option<PathBuf>,
-
-    /// Static files required to evaluate a Hive configuration.
-    assets: Assets,
 
     /// Whether to pass --show-trace in Nix commands.
     show_trace: bool,
@@ -172,9 +169,21 @@ impl Hive {
 
         Ok(Self {
             path,
-            evaluation_method: EvaluationMethod::NixInstantiate,
+            evaluation_method: EvaluationMethod::NixInstantiate(assets),
             context_dir,
-            assets,
+            show_trace: false,
+            impure: false,
+            nix_options: HashMap::new(),
+            meta_config: OnceCell::new(),
+        })
+    }
+
+    pub async fn with_flake_eval(path: HivePath) -> ColmenaResult<Self> {
+        let context_dir = path.context_dir();
+        Ok(Self {
+            path,
+            evaluation_method: EvaluationMethod::DirectFlakeEval,
+            context_dir,
             show_trace: false,
             impure: false,
             nix_options: HashMap::new(),
@@ -195,14 +204,6 @@ impl Hive {
                     .await
             })
             .await
-    }
-
-    pub fn set_evaluation_method(&mut self, method: EvaluationMethod) {
-        if !self.is_flake() && method == EvaluationMethod::DirectFlakeEval {
-            return;
-        }
-
-        self.evaluation_method = method;
     }
 
     pub fn set_show_trace(&mut self, value: bool) {
@@ -469,7 +470,7 @@ impl Hive {
     /// Returns the base expression from which the evaluated Hive can be used.
     fn get_base_expression(&self) -> String {
         match self.evaluation_method {
-            EvaluationMethod::NixInstantiate => self.assets.get_base_expression(),
+            EvaluationMethod::NixInstantiate(ref assets) => assets.get_base_expression(),
             EvaluationMethod::DirectFlakeEval => FLAKE_APPLY_SNIPPET.to_string(),
         }
     }
@@ -495,7 +496,7 @@ impl<'hive> NixInstantiate<'hive> {
 
     fn instantiate(&self) -> Command {
         // TODO: Better error handling
-        if self.hive.evaluation_method == EvaluationMethod::DirectFlakeEval {
+        if matches!(self.hive.evaluation_method, EvaluationMethod::DirectFlakeEval) {
             panic!("Instantiation is not supported with DirectFlakeEval");
         }
 
@@ -520,7 +521,7 @@ impl<'hive> NixInstantiate<'hive> {
         let flags = self.hive.nix_flags();
 
         match self.hive.evaluation_method {
-            EvaluationMethod::NixInstantiate => {
+            EvaluationMethod::NixInstantiate(_) => {
                 let mut command = self.instantiate();
 
                 command
